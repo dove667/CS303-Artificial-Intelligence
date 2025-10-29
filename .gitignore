@@ -1,0 +1,7 @@
+.venv
+*image*
+Lecture
+*pycache*
+*ipynb_checkpoints*
+.DS_Store
+.vscode
