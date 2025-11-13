@@ -16,14 +16,22 @@ DIRS = np.array([
     (-1, -1), (-1, 0), (-1, 1),
     (0, -1) ,          (0, 1),
     (1, -1) , (1, 0),  (1, 1)
-], dtype=np.int8)
+], dtype=np.int16)
+
+# 每个角的三条方向（常量，避免函数内反复分配）
+CORNER_DIRS = np.array([
+    [[0,  1], [1,  0], [1,  1]],   # (0, 0)
+    [[0, -1], [1,  0], [1, -1]],   # (0, n-1)
+    [[0,  1], [-1, 0], [-1, 1]],   # (n-1, 0)
+    [[0, -1], [-1, 0], [-1, -1]],  # (n-1, n-1)
+], dtype=np.int16)
 
 # 不同阶段的启发式评估权重
-# w1: 棋盘权重  w2: 稳定子  w3: 棋子数量  w4: 行动力
+# w1: 棋盘权重  w2: 稳定子  w3: 棋子  w4: 行动力 
 HURISTIC_WEIGHTS = {
-    'begin': (3, 5, 1, 1),
-    'middle': (3, 2, 2, 3),
-    'end': (3, 1, 5, 1)
+    'begin': (3, 5, 0, 2),
+    'middle': (2, 3, 0, 5),
+    'end': (1, 1, 7, 1)
 }
 
 @njit(cache=True)
@@ -47,7 +55,7 @@ def nb_get_possible_moves(board, color):
     possible = neighbor & (board == 0)
     rows, cols = np.nonzero(possible) # 返回非零元素的坐标
     k = rows.shape[0]
-    coords = np.empty((k, 2), dtype=np.int8)
+    coords = np.empty((k, 2), dtype=np.int16)
     coords[:, 0] = rows
     coords[:, 1] = cols
     return coords
@@ -60,9 +68,9 @@ def nb_is_valid_move(board, row, col, color):
     """
     n = board.shape[0]
     if board[row, col] != 0:
-        return False, np.empty((0, 2), dtype=np.int8)
+        return False, np.empty((0, 2), dtype=np.int16)
 
-    flips = np.empty((64, 2), dtype=np.int8)  
+    flips = np.empty((64, 2), dtype=np.int16)  
     idx = 0
     for dr, dc in DIRS:
         r = row + dr; c = col + dc
@@ -82,7 +90,7 @@ def nb_is_valid_move(board, row, col, color):
                 flips[idx, 1] = cc
                 idx += 1
     if idx == 0:
-        return False, np.empty((0, 2), dtype=np.int8)
+        return False, np.empty((0, 2), dtype=np.int16)
     return True, flips[:idx]
 
 @njit(cache=True)
@@ -128,7 +136,7 @@ def nb_candidates_with_flips_csr(board, color):
     possible = nb_get_possible_moves(board, color)
     K = possible.shape[0]
     # 先统计合法走法与总翻子数
-    cand_tmp = np.empty((K, 2), dtype=np.int8)
+    cand_tmp = np.empty((K, 2), dtype=np.int16)
     valid = 0 # 合法走法计数
     total = 0 # 总翻子计数
     for i in range(K):
@@ -140,7 +148,7 @@ def nb_candidates_with_flips_csr(board, color):
             total += flips.shape[0]
             valid += 1
     moves = cand_tmp[:valid].copy()
-    flips_buf = np.empty((total, 2), dtype=np.int8)
+    flips_buf = np.empty((total, 2), dtype=np.int16)
     offsets = np.empty(valid + 1, dtype=np.int32)
     offsets[0] = 0
     write_ptr = 0
@@ -155,6 +163,34 @@ def nb_candidates_with_flips_csr(board, color):
             vi += 1
             offsets[vi] = write_ptr
     return moves, flips_buf, offsets
+
+@njit(cache=True)
+def nb_get_stable_disk(chessboard) -> int:
+    """
+    从四个角出发，沿三条射线（横、纵、对角）连续同色棋子记为“稳定子”的近似估计。
+    返回：白子 +1，黑子 -1 的稳定子和。
+    """
+    n = chessboard.shape[0]
+    stable = np.zeros((n, n), dtype=np.uint16)
+
+    corners_r = np.array([0, 0, n - 1, n - 1], dtype=np.int16)
+    corners_c = np.array([0, n - 1, 0, n - 1], dtype=np.int16)
+
+    for i in range(4):
+        cr = int(corners_r[i]); cc = int(corners_c[i])
+        color = int(chessboard[cr, cc])
+        if color == 0:
+            continue
+        for j in range(3):
+            dr = int(CORNER_DIRS[i, j, 0]); dc = int(CORNER_DIRS[i, j, 1])
+            r = cr; c = cc
+            while 0 <= r < n and 0 <= c < n and int(chessboard[r, c]) == color:
+                stable[r, c] = 1
+                r += dr; c += dc
+
+    s = int(np.sum(chessboard.astype(np.int16) * stable.astype(np.int16)))
+    return s
+
 
 #don’t change the class name
 class AI(object):
@@ -174,15 +210,15 @@ class AI(object):
                            (1, -1),  (1, 0), (1, 1)]
         self.max_depth = 64
         self.weighted_board = np.array([
-            [1, 8, 3, 7, 7, 3, 8, 1],
-            [8, 3, 2, 5, 5, 2, 3, 8],
-            [3, 2, 6, 6, 6, 6, 2, 3],
-            [7, 5, 6, 4, 4, 6, 5, 7],
-            [7, 5, 6, 4, 4, 6, 5, 7],
-            [3, 2, 6, 6, 6, 6, 2, 3],
-            [8, 3, 2, 5, 5, 2, 3, 8],
-            [1, 8, 3, 7, 7, 3, 8, 1],
-        ], dtype=np.int8)
+            [20, -10,  3,   1,   1,   3,   -10,  20],
+            [-10, 5,   3,   2,   2,   3,   5,   -10],
+            [3,   3,   -5,  -2,  -2,  -5,  5,   3],
+            [10,  2,   -2,  -1,  -1,  -2,  2,   10],
+            [10,  2,   -2,  -1,  -1,  -2,  2,   10],
+            [3,   5,   -5,  -2,  -2,  -5,  5,   3],
+            [-10, 5,   3,   2,   2,   3,   5,   -10],
+            [20,  -10,  3,  10,  10,  3,   -10, 20],
+        ], dtype=np.int16)
         # 用于各层走法排序的主变线提示：pv_moves[ply] = 该层推荐走法(根为0层)
         self.pv_moves: List[Optional[Tuple[int,int]]] = [None] * (self.max_depth)
 
@@ -197,7 +233,7 @@ class AI(object):
             
     def _warmup_numba(self):
         """触发 numba 编译（在构造时，不占用走子时间）"""
-        b = np.zeros((8, 8), dtype=np.int8)
+        b = np.zeros((8, 8), dtype=np.int16)
         b[3, 3] = COLOR_WHITE; b[4, 4] = COLOR_WHITE
         b[3, 4] = COLOR_BLACK; b[4, 3] = COLOR_BLACK
 
@@ -215,10 +251,13 @@ class AI(object):
                     nb_flip_inplace(b, flips, color)
                     nb_flip_inplace(b, flips, -color)
                     b[r0, c0] = COLOR_NONE
+        # 也预热稳定子评估
+        _ = nb_get_stable_disk(b)
 
-    def get_candidate_reversed_list(self, chessboard, color) -> Tuple[List[Tuple[int, int]], List[np.ndarray]]:
+    def get_candidate_reversed_list(self, chessboard, color, avoid_corners: bool = False) -> Tuple[List[Tuple[int, int]], List[np.ndarray]]:
         """
-        获取所有合法落子点列表和对应的翻转棋子位置列表
+        获取所有合法落子点列表和对应的翻转棋子位置列表。
+        不过滤角落；排序交由搜索阶段处理（角落放到优先级最低）。
         """
         moves, flips_buf, offsets = nb_candidates_with_flips_csr(chessboard, color)
         k = moves.shape[0]
@@ -226,36 +265,14 @@ class AI(object):
         # 懒切片视图，不复制
         reversed_list: List[np.ndarray] = [flips_buf[offsets[i]:offsets[i+1], :] for i in range(k)]
         return candidate_list, reversed_list
-    
-    # def _get_stable_disk(self, chessboard) -> int:
-    #     """
-    #     计算颜色的稳定子得分
-    #     但是目前只是一个不准确的估计。
-    #     """
-    #     stable_coords = set()
-    #     corners = [(0, 0), (0, self.chessboard_size - 1),
-    #             (self.chessboard_size - 1, 0), (self.chessboard_size - 1, self.chessboard_size - 1)]
-    #     corner_dirs = {
-    #         (0, 0): [(0, 1), (1, 0), (1, 1)],
-    #         (0, self.chessboard_size - 1): [(0, -1), (1, 0), (1, -1)],
-    #         (self.chessboard_size - 1, 0): [(0, 1), (-1, 0), (-1, 1)],
-    #         (self.chessboard_size - 1, self.chessboard_size - 1): [(0, -1), (-1, 0), (-1, -1)],
-    #     }
-    #     for cr, cc in corners:
-    #         if chessboard[cr, cc] == COLOR_NONE:
-    #             continue
-    #         color = chessboard[cr, cc]
-    #         for dr, dc in corner_dirs[(cr, cc)]:
-    #             r, c = cr, cc
-    #             while 0 <= r < self.chessboard_size and 0 <= c < self.chessboard_size and chessboard[r, c] == color:
-    #                 stable_coords.add((r, c))
-    #                 r += dr
-    #                 c += dc
-    #     return sum(int(chessboard[r, c]) for (r, c) in stable_coords)
         
-    def evaluate(self, chessboard) -> float:
+    def evaluate(self, chessboard, isterminal) -> float:
         """
-        反黑白棋启发式评估（“白方优势”为正，“黑方优势”为负）。
+        反黑白棋启发式评估。
+
+        开局: 稳定子 > 棋盘权重 > 行动力
+        中局: 行动力 > 稳定子 > 棋盘权重
+        尾局: 棋子数量 (Parity) > 稳定子
         """
         # 棋盘权重
         weighted_chessboard = float(np.sum(self.weighted_board * chessboard))
@@ -265,18 +282,30 @@ class AI(object):
         black_cnt = nb_count_legal_moves(chessboard, COLOR_BLACK)
         mobility = float(white_cnt - black_cnt)
 
-        # 棋子数量
-        piece_count = int(np.sum(chessboard != COLOR_NONE))
+        # 稳定子
+        stable_score = nb_get_stable_disk(chessboard)
+        
+        # 棋子数量差
+        piece_score = int(np.sum(chessboard))  
 
+        if (isterminal):
+            if piece_score > 0:
+                return INFINITY  # 白多
+            elif piece_score < 0:
+                return -INFINITY # 黑多
+            else:
+                return 0          # 平局
+            
         # 动态权重
-        if piece_count <= 15:
+        piece_count = int(np.sum(chessboard != COLOR_NONE))
+        if piece_count <= 20:
             w1, w2, w3, w4 = HURISTIC_WEIGHTS['begin']
-        elif piece_count <= 40:
+        elif piece_count <= 45:
             w1, w2, w3, w4 = HURISTIC_WEIGHTS['middle']
         else:
             w1, w2, w3, w4 = HURISTIC_WEIGHTS['end']
 
-        score = w1 * weighted_chessboard + w2 * 0.0 + w3 * piece_count + w4 * mobility
+        score = w1 * weighted_chessboard + w2 * stable_score + w3 * piece_score + w4 * mobility
         return score
 
     def minimax_search(self, chessboard, depth_limit, deadline) -> Tuple[float, Tuple[int, int], bool, List[Tuple[int,int]]]:
@@ -312,9 +341,9 @@ class AI(object):
 
         def max_value(chessboard, depth, alpha, beta) -> Tuple[float, Optional[Tuple[int, int]], bool, List[Tuple[int,int]]]:
             if time_exceeded():
-                return self.evaluate(chessboard), None, True, []
+                return self.evaluate(chessboard, False), None, True, []
             if depth == depth_limit:
-                return self.evaluate(chessboard), None, False, []
+                return self.evaluate(chessboard, False), None, False, []
 
             candidate_list, reversed_list = self.get_candidate_reversed_list(chessboard, COLOR_BLACK)
             reorder_with_previous(candidate_list, reversed_list, depth)
@@ -327,7 +356,7 @@ class AI(object):
             if not candidate_list:  # 无合法步，检查是否终局，否则跳过回合
                 opp_cands, _ = self.get_candidate_reversed_list(chessboard, COLOR_WHITE)
                 if not opp_cands:
-                    return self.evaluate(chessboard), None, False, []
+                    return self.evaluate(chessboard, True), None, False, []
                 return min_value(chessboard, depth + 1, alpha, beta)
 
             best, move = -INFINITY, None
@@ -336,7 +365,7 @@ class AI(object):
                 # 额外的频繁超时检查
                 if time_exceeded():
                     # 若已有部分结果，直接返回当前最好解，以便迭代加深能利用
-                    return (best if move is not None else self.evaluate(chessboard)), move, True, best_pv
+                    return (best if move is not None else self.evaluate(chessboard, False)), move, True, best_pv
 
                 r0, c0 = candidate
                 # 执行落子
@@ -354,7 +383,7 @@ class AI(object):
 
                 if timed_out:
                     # 子节点已超时，直接把当前最好结果向上返回
-                    return (best if move is not None else self.evaluate(chessboard)), move, True, best_pv
+                    return (best if move is not None else self.evaluate(chessboard, False)), move, True, best_pv
 
                 if v2 > best:
                     best, move = v2, candidate
@@ -368,9 +397,9 @@ class AI(object):
 
         def min_value(chessboard, depth, alpha, beta) -> Tuple[float, Optional[Tuple[int, int]], bool, List[Tuple[int,int]]]:
             if time_exceeded():
-                return self.evaluate(chessboard), None, True, []
+                return self.evaluate(chessboard, False), None, True, []
             if depth == depth_limit:
-                return self.evaluate(chessboard), None, False, []
+                return self.evaluate(chessboard, False), None, False, []
 
             candidate_list, reversed_list = self.get_candidate_reversed_list(chessboard, COLOR_WHITE)
             reorder_with_previous(candidate_list, reversed_list, depth)
@@ -383,14 +412,14 @@ class AI(object):
             if not candidate_list:  # 无合法步，检查是否终局，否则跳过回合
                 opp_cands, _ = self.get_candidate_reversed_list(chessboard, COLOR_BLACK)
                 if not opp_cands:
-                    return self.evaluate(chessboard), None, False, []
+                    return self.evaluate(chessboard, True), None, False, []
                 return max_value(chessboard, depth + 1, alpha, beta)
 
             best, move = INFINITY, None
             best_pv: List[Tuple[int,int]] = []
             for candidate, reversed_opponents in zip(candidate_list, reversed_list):
                 if time_exceeded():
-                    return (best if move is not None else self.evaluate(chessboard)), move, True, best_pv
+                    return (best if move is not None else self.evaluate(chessboard, False)), move, True, best_pv
 
                 r0, c0 = candidate
                 # 执行落子
@@ -407,7 +436,7 @@ class AI(object):
                 chessboard[r0, c0] = COLOR_NONE
 
                 if time_out:
-                    return (best if move is not None else self.evaluate(chessboard)), move, True, best_pv
+                    return (best if move is not None else self.evaluate(chessboard, False)), move, True, best_pv
 
                 if v2 < best:
                     best, move = v2, candidate
@@ -452,7 +481,7 @@ class AI(object):
         self.candidate_list.clear()
         #============================================
         #Write your algorithm here
-        chessboard = chessboard.astype(np.int8, copy=False)
+        chessboard = chessboard.astype(np.int16, copy=False)
         # 确认所有合法落子点
         self.candidate_list, _ = self.get_candidate_reversed_list(chessboard, self.color)
 
