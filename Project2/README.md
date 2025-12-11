@@ -15,11 +15,6 @@ numpy >= 1.19
 ```bash
 pip install pandas scikit-learn xgboost numpy
 ```
-或者使用uv
-
-```bash
-uv sync
-```
 
 ### 执行训练脚本
 
