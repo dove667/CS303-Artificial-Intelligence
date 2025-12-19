@@ -72,7 +72,7 @@ def train_xgboost(X_train, y_train, X_val, y_val, X_test, params):
 def main():
     print("Loading preprocessed data...")
     preprocessor = DataPreprocessor(data_dir='.')
-    X_train, y_train, X_test = preprocessor.preprocess(feature_engineering=False, remove_low_predictive=False)
+    X_train, y_train, X_test = preprocessor.preprocess(feature_engineering=True, remove_low_predictive=False, one_hot_encoding=False, scale=False)
     
     X_train, X_val, y_train, y_val = train_test_split(
         X_train, y_train, test_size=0.2, random_state=42, stratify=y_train

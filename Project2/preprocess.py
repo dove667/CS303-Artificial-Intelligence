@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder
+
 import os
 import warnings
 
@@ -157,7 +158,7 @@ class DataPreprocessor:
         
         return train_data, test_data
     
-    def encode_categorical_features(self, train_data, test_data, fit=True):
+    def one_hot_encoding(self, train_data, test_data, fit=True):
 
         print("\n" + "=" * 60)
         print("Encoding categorical features (One-Hot)...")
@@ -189,6 +190,36 @@ class DataPreprocessor:
         print(f"Encoded to {len(train_encoded.columns)} features")
         
         return train_encoded, test_encoded
+    def label_encoding(self, train_data, test_data, fit=True):
+
+        print("\n" + "=" * 60)
+        print("Encoding categorical features (Label Encoding)...")
+        print("=" * 60)
+        
+        categorical_cols = train_data.select_dtypes(include=['object']).columns.tolist()
+        print(f"Detected categorical columns: {categorical_cols}")
+        
+        if fit:
+            self.label_encoders = {}
+            for col in categorical_cols:
+                # Fit on the union of train/test categories to avoid unseen labels at transform time.
+                le = LabelEncoder()
+                combined = pd.concat([train_data[col], test_data[col]], axis=0)
+                le.fit(combined)
+                train_data[col] = le.transform(train_data[col])
+                self.label_encoders[col] = le
+        else:
+            for col in categorical_cols:
+                le = self.label_encoders[col]
+                train_data[col] = le.transform(train_data[col])
+        
+        for col in categorical_cols:
+            le = self.label_encoders[col]
+            test_data[col] = le.transform(test_data[col])
+        
+        print("Label encoding completed")
+        
+        return train_data, test_data
     
     def scale_numerical_features(self, train_data, test_data, fit=True):
 
@@ -210,7 +241,7 @@ class DataPreprocessor:
         
         return train_data, test_data
     
-    def preprocess(self, feature_engineering=False, remove_low_predictive=False, fit=True):
+    def preprocess(self, feature_engineering=False, remove_low_predictive=False, one_hot_encoding=True, scale=True, fit=True):
 
         train_data, test_data, y_train = self.load_data()
         
@@ -224,15 +255,19 @@ class DataPreprocessor:
         if remove_low_predictive:
             train_data, test_data = self.remove_low_predictive_features(train_data, test_data)
         
-        train_data, test_data = self.encode_categorical_features(train_data, test_data, fit=fit)
+        if one_hot_encoding:
+            train_data, test_data = self.one_hot_encoding(train_data, test_data, fit=fit)
+        else:
+            train_data, test_data = self.label_encoding(train_data, test_data, fit=fit)
+
+        if scale:
+            train_data, test_data = self.scale_numerical_features(train_data, test_data, fit=fit)
         
-        X_train, X_test = self.scale_numerical_features(train_data, test_data, fit=fit)
-        
-        self.feature_columns = X_train.columns.tolist()
+        self.feature_columns = train_data.columns.tolist()
         
         print("\n" + "=" * 60)
         print("Preprocessing Complete!")
         print("=" * 60)
         
-        return X_train, y_train, X_test
+        return train_data, y_train, test_data
 
